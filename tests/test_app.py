@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 from copy import deepcopy
 
-from src.app import app, activities
+from src.app import app, activities, reviews
 
 
 # Store original activities state for reset between tests
@@ -29,6 +29,16 @@ def reset_activities():
         activities[activity_name]["participants"] = deepcopy(
             _original_activities[activity_name]["participants"]
         )
+
+
+@pytest.fixture(autouse=True)
+def reset_reviews():
+    """Reset reviews to empty state before each test."""
+    for activity_name in reviews:
+        reviews[activity_name] = []
+    yield
+    for activity_name in reviews:
+        reviews[activity_name] = []
 
 
 @pytest.fixture
@@ -189,3 +199,297 @@ class TestUnregister:
         # Assert
         assert response.status_code == 400
         assert "not signed up" in response.json()["detail"]
+
+
+class TestCreateReview:
+    """Tests for the POST /activities/{activity_name}/reviews endpoint."""
+
+    def test_create_review_success(self, client):
+        """Test successful review creation."""
+        # Arrange
+        activity_name = "Chess Club"
+        review_data = {
+            "email": "michael@mergington.edu",
+            "rating": 5,
+            "comment": "Great club, very challenging!"
+        }
+
+        # Act
+        response = client.post(
+            f"/activities/{activity_name}/reviews",
+            json=review_data
+        )
+
+        # Assert
+        assert response.status_code == 200
+        assert "Review added" in response.json()["message"]
+        assert len(reviews[activity_name]) == 1
+        assert reviews[activity_name][0]["email"] == "michael@mergington.edu"
+
+    def test_create_review_activity_not_found(self, client):
+        """Test review for non-existent activity returns 404."""
+        # Arrange
+        review_data = {"email": "test@mergington.edu", "rating": 5, "comment": "Great!"}
+
+        # Act
+        response = client.post("/activities/Nonexistent/reviews", json=review_data)
+
+        # Assert
+        assert response.status_code == 404
+        assert "Activity not found" in response.json()["detail"]
+
+    def test_create_review_not_participant(self, client):
+        """Test non-participant cannot leave review (403)."""
+        # Arrange
+        review_data = {
+            "email": "stranger@mergington.edu",
+            "rating": 4,
+            "comment": "I wish I was here"
+        }
+
+        # Act
+        response = client.post("/activities/Chess Club/reviews", json=review_data)
+
+        # Assert
+        assert response.status_code == 403
+        assert "Only participants" in response.json()["detail"]
+
+    def test_create_review_duplicate(self, client):
+        """Test duplicate review from same email returns 400."""
+        # Arrange
+        review_data = {
+            "email": "michael@mergington.edu",
+            "rating": 5,
+            "comment": "Great club!"
+        }
+        client.post("/activities/Chess Club/reviews", json=review_data)
+
+        # Act
+        response = client.post("/activities/Chess Club/reviews", json=review_data)
+
+        # Assert
+        assert response.status_code == 400
+        assert "already reviewed" in response.json()["detail"]
+
+    def test_create_review_invalid_rating_low(self, client):
+        """Test rating below 1 returns 422."""
+        # Arrange
+        review_data = {
+            "email": "michael@mergington.edu",
+            "rating": 0,
+            "comment": "Bad"
+        }
+
+        # Act
+        response = client.post("/activities/Chess Club/reviews", json=review_data)
+
+        # Assert
+        assert response.status_code == 422
+
+    def test_create_review_invalid_rating_high(self, client):
+        """Test rating above 5 returns 422."""
+        # Arrange
+        review_data = {
+            "email": "michael@mergington.edu",
+            "rating": 6,
+            "comment": "Too good"
+        }
+
+        # Act
+        response = client.post("/activities/Chess Club/reviews", json=review_data)
+
+        # Assert
+        assert response.status_code == 422
+
+    def test_create_review_empty_comment(self, client):
+        """Test empty comment returns 400."""
+        # Arrange
+        review_data = {
+            "email": "michael@mergington.edu",
+            "rating": 4,
+            "comment": "   "
+        }
+
+        # Act
+        response = client.post("/activities/Chess Club/reviews", json=review_data)
+
+        # Assert
+        assert response.status_code == 400
+        assert "Comment cannot be empty" in response.json()["detail"]
+
+    def test_create_review_comment_too_long(self, client):
+        """Test comment over 500 chars returns 400."""
+        # Arrange
+        review_data = {
+            "email": "michael@mergington.edu",
+            "rating": 4,
+            "comment": "A" * 501
+        }
+
+        # Act
+        response = client.post("/activities/Chess Club/reviews", json=review_data)
+
+        # Assert
+        assert response.status_code == 400
+        assert "500 characters" in response.json()["detail"]
+
+
+class TestGetReviews:
+    """Tests for the GET /activities/{activity_name}/reviews endpoint."""
+
+    def test_get_reviews_with_reviews(self, client):
+        """Test getting reviews with calculated average."""
+        # Arrange
+        client.post("/activities/Chess Club/reviews", json={
+            "email": "michael@mergington.edu", "rating": 5, "comment": "Excellent!"
+        })
+        client.post("/activities/Chess Club/reviews", json={
+            "email": "daniel@mergington.edu", "rating": 3, "comment": "OK"
+        })
+
+        # Act
+        response = client.get("/activities/Chess Club/reviews")
+
+        # Assert
+        assert response.status_code == 200
+        data = response.json()
+        assert data["review_count"] == 2
+        assert data["average_rating"] == 4.0
+        assert len(data["reviews"]) == 2
+
+    def test_get_reviews_empty(self, client):
+        """Test getting reviews for activity with no reviews."""
+        # Arrange
+        # (no reviews created)
+
+        # Act
+        response = client.get("/activities/Chess Club/reviews")
+
+        # Assert
+        assert response.status_code == 200
+        data = response.json()
+        assert data["review_count"] == 0
+        assert data["average_rating"] is None
+        assert data["reviews"] == []
+
+    def test_get_reviews_activity_not_found(self, client):
+        """Test getting reviews for non-existent activity returns 404."""
+        # Act
+        response = client.get("/activities/Nonexistent/reviews")
+
+        # Assert
+        assert response.status_code == 404
+        assert "Activity not found" in response.json()["detail"]
+
+
+class TestDeleteReview:
+    """Tests for the DELETE /activities/{activity_name}/reviews endpoint."""
+
+    def test_delete_review_success(self, client):
+        """Test successful review deletion."""
+        # Arrange
+        client.post("/activities/Chess Club/reviews", json={
+            "email": "michael@mergington.edu", "rating": 5, "comment": "Great!"
+        })
+
+        # Act
+        response = client.delete(
+            "/activities/Chess Club/reviews",
+            params={"email": "michael@mergington.edu"}
+        )
+
+        # Assert
+        assert response.status_code == 200
+        assert "Review deleted" in response.json()["message"]
+        assert len(reviews["Chess Club"]) == 0
+
+    def test_delete_review_not_found(self, client):
+        """Test deleting non-existent review returns 404."""
+        # Act
+        response = client.delete(
+            "/activities/Chess Club/reviews",
+            params={"email": "nobody@mergington.edu"}
+        )
+
+        # Assert
+        assert response.status_code == 404
+        assert "Review not found" in response.json()["detail"]
+
+    def test_delete_review_activity_not_found(self, client):
+        """Test deleting review from non-existent activity returns 404."""
+        # Act
+        response = client.delete(
+            "/activities/Nonexistent/reviews",
+            params={"email": "test@mergington.edu"}
+        )
+
+        # Assert
+        assert response.status_code == 404
+        assert "Activity not found" in response.json()["detail"]
+
+
+class TestActivitiesWithRatings:
+    """Tests for GET /activities with review rating fields and sorting."""
+
+    def test_activities_include_rating_fields(self, client):
+        """Test that activities include average_rating and review_count."""
+        # Act
+        response = client.get("/activities")
+
+        # Assert
+        assert response.status_code == 200
+        data = response.json()
+        for name, activity in data.items():
+            assert "average_rating" in activity
+            assert "review_count" in activity
+            assert activity["review_count"] == 0
+            assert activity["average_rating"] is None
+
+    def test_activities_sort_by_rating_desc(self, client):
+        """Test sorting activities by rating descending."""
+        # Arrange - add reviews to give different ratings
+        client.post("/activities/Chess Club/reviews", json={
+            "email": "michael@mergington.edu", "rating": 5, "comment": "Best!"
+        })
+        client.post("/activities/Programming Class/reviews", json={
+            "email": "emma@mergington.edu", "rating": 3, "comment": "Good"
+        })
+
+        # Act
+        response = client.get("/activities", params={"sort_by": "rating_desc"})
+
+        # Assert
+        assert response.status_code == 200
+        data = response.json()
+        keys = list(data.keys())
+        # Chess Club (5.0) should come before Programming Class (3.0)
+        assert keys.index("Chess Club") < keys.index("Programming Class")
+        # Unrated activities should be at the end
+        unrated_start = None
+        for i, name in enumerate(keys):
+            if data[name]["average_rating"] is None:
+                unrated_start = i
+                break
+        if unrated_start is not None:
+            for name in keys[unrated_start:]:
+                assert data[name]["average_rating"] is None
+
+    def test_activities_sort_by_rating_asc(self, client):
+        """Test sorting activities by rating ascending."""
+        # Arrange
+        client.post("/activities/Chess Club/reviews", json={
+            "email": "michael@mergington.edu", "rating": 2, "comment": "Meh"
+        })
+        client.post("/activities/Programming Class/reviews", json={
+            "email": "emma@mergington.edu", "rating": 5, "comment": "Amazing!"
+        })
+
+        # Act
+        response = client.get("/activities", params={"sort_by": "rating_asc"})
+
+        # Assert
+        assert response.status_code == 200
+        data = response.json()
+        keys = list(data.keys())
+        # Chess Club (2.0) should come before Programming Class (5.0)
+        assert keys.index("Chess Club") < keys.index("Programming Class")

@@ -15,6 +15,14 @@
     <main>
       <section id="activities-container">
         <h3>Available Activities</h3>
+        <div class="sort-controls">
+          <label for="sort-by">Sort by:</label>
+          <select id="sort-by">
+            <option value="">Default</option>
+            <option value="rating_desc">Best rated first</option>
+            <option value="rating_asc">Lowest rated first</option>
+          </select>
+        </div>
         <div id="activities-list">
           <!-- Activities will be loaded here -->
           <p>Loading activities...</p>

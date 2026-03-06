@@ -71,6 +71,7 @@ Mergington High School necesita que los estudiantes inscritos en actividades ext
 
 ---
 
+<!-- No necesarios -->
 ## 4. Requisitos No Funcionales
 
 | ID | Requisito | Detalle |
